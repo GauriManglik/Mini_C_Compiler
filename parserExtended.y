@@ -3,18 +3,25 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "semantic.h"  // Include semantic header
+#include "semantic.h"      // For symbol table functions
+#include "intermediate.h"  // For intermediate code generation
 
 void yyerror(const char *s);
 int yylex(void);
 
 extern FILE *yyin;  // from Flex
 
+int tempVarCount = 1;
+
 %}
 
 %union {
     int num;
     char *str;
+    struct {
+        int val;
+        char name[20];
+    } exprInfo;
 }
 
 %token <str> HEADER_FILE
@@ -23,7 +30,8 @@ extern FILE *yyin;  // from Flex
 %token <num> NUM
 %token <str> ID
 %token ASSIGN SEMI LPAREN RPAREN LBRACE RBRACE PLUS MINUS MUL DIV
-%type <num> expr
+
+%type <exprInfo> expr
 
 %left PLUS MINUS
 %left MUL DIV
@@ -34,22 +42,21 @@ start:
     program
     {
         printf("\nParsing completed.\n\nSymbol Table:\n");
-        print_symbol_table();   // Print from semantic.c
+        print_symbol_table();
+
+        printCode();
     }
 ;
 
 program:
     program_element
     | program program_element
-    {
-       
-    }
 ;
 
 program_element:
     function_definition
     | statement
-    ;
+;
 
 function_definition:
     INT ID LPAREN RPAREN block
@@ -57,7 +64,7 @@ function_definition:
         printf("Parsed function definition: int %s()\n", $2);
         free($2);
     }
-    ;
+;
 
 statement:
     PREPROCESSOR_INCLUDE HEADER_FILE
@@ -70,14 +77,15 @@ statement:
         if (lookup($2) != NULL) {
             fprintf(stderr, "Error: Variable '%s' already declared.\n", $2);
         } else {
-            insert_symbol($2, "int", $4);
-            printf("Parsed declaration: int %s = %d\n", $2, $4);
+            insert_symbol($2, "int", $4.val);
+            generateCode("=", $4.name, "", $2);
+            printf("Parsed declaration: int %s = %d\n", $2, $4.val);
         }
         free($2);
     }
     | RETURN expr SEMI
     {
-        printf("Parsed return statement: return %d\n", $2);
+        printf("Parsed return statement: return %d\n", $2.val);
     }
     | IF LPAREN expr RPAREN block ELSE block
     {
@@ -87,39 +95,67 @@ statement:
     {
         printf("Parsed if statement\n");
     }
-    ;
+;
 
 block:
     LBRACE program RBRACE
-    ;
+;
 
 expr:
-    expr PLUS expr { $$ = $1 + $3; }
-    | expr MINUS expr { $$ = $1 - $3; }
-    | expr MUL expr { $$ = $1 * $3; }
+    expr PLUS expr
+    {
+        $$.val = $1.val + $3.val;
+        sprintf($$.name, "t%d", tempVarCount++);
+        generateCode("+", $1.name, $3.name, $$.name);
+    }
+    | expr MINUS expr
+    {
+        $$.val = $1.val - $3.val;
+        sprintf($$.name, "t%d", tempVarCount++);
+        generateCode("-", $1.name, $3.name, $$.name);
+    }
+    | expr MUL expr
+    {
+        $$.val = $1.val * $3.val;
+        sprintf($$.name, "t%d", tempVarCount++);
+        generateCode("*", $1.name, $3.name, $$.name);
+    }
     | expr DIV expr
-      {
-          if ($3 == 0) {
-              fprintf(stderr, "Error: Division by zero.\n");
-              $$ = 0;
-          } else {
-              $$ = $1 / $3;
-          }
-      }
-    | LPAREN expr RPAREN { $$ = $2; }
-    | NUM { $$ = $1; }
+    {
+        if ($3.val == 0) {
+            fprintf(stderr, "Error: Division by zero.\n");
+            $$.val = 0;
+            strcpy($$.name, "0");
+        } else {
+            $$.val = $1.val / $3.val;
+            sprintf($$.name, "t%d", tempVarCount++);
+            generateCode("/", $1.name, $3.name, $$.name);
+        }
+    }
+    | LPAREN expr RPAREN
+    {
+        $$.val = $2.val;
+        strcpy($$.name, $2.name);
+    }
+    | NUM
+    {
+        $$.val = $1;
+        sprintf($$.name, "%d", $1);
+    }
     | ID
-      {
-          Symbol *sym = lookup($1);
-          if (sym == NULL) {
-              fprintf(stderr, "Error: Undeclared variable '%s'\n", $1);
-              $$ = 0;
-          } else {
-              $$ = sym->value;
-          }
-          free($1);
-      }
-    ;
+    {
+        Symbol *sym = lookup($1);
+        if (sym == NULL) {
+            fprintf(stderr, "Error: Undeclared variable '%s'\n", $1);
+            $$.val = 0;
+            strcpy($$.name, "0");
+        } else {
+            $$.val = sym->value;
+            strcpy($$.name, $1);
+        }
+        free($1);
+    }
+;
 
 %%
 
@@ -139,7 +175,7 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    init_symbol_table(); // initialize symbol table from semantic.c
+    init_symbol_table();  // From semantic.c
     yyparse();
 
     fclose(yyin);
